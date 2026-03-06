@@ -142,8 +142,17 @@ static void action_ch_solo_step(int key) {
     // Calculate new attenuation for solo channel 
     double solo_ch = values[current_channel];
     solo_ch = inc_dec_attenuation(solo_ch, false);
-    // Calculate minimal value for other channels
-    double min_atten = 2 * cfg.ada.pivot_attenuation - solo_ch;
+    // Calculate minimal value for other channels ...
+    double min_atten;
+    if (solo_ch > ADACOM_MIN_ATTENUATION) {
+        // ... around the pivot point.
+        min_atten = 2 * cfg.ada.pivot_attenuation - solo_ch;
+    } else {
+        // ... if the solo channel reaches the minimal attenuation, raise all
+        // other channels to their maximum attenuation.
+        min_atten = ADACOM_MAX_ATTENUATION;
+    }
+    // Set all calculated attenuation values
     for (int ch = 0; ch < n_channels; ch++) {
         if (current_channel == ch) {
             values[ch] = solo_ch;
