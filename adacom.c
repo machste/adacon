@@ -32,7 +32,7 @@ static const char *state_to_cstr[] = {
 
 // Adaura communiction settings
 static AdaComState state = ADACOM_STATE_UNKNOWN;
-static const char *device = NULL;
+static char *device = NULL;
 static Serial *serial = NULL;
 static MlTimer *com_wdog = NULL;
 static int timeout = 1000;
@@ -60,7 +60,8 @@ static void com_wdog_cb(MlTimer *timer, void *arg);
 
 void adacom_init(const char *com_device)
 {
-    device = com_device;
+    device = strdup(com_device);
+    com_wdog = new(MlTimer, com_wdog_cb, NULL);
     regex_channel = new(Regex, "Channel\\s+([0-9]+):\\s+(.+)");
     regex_set_resp = new(Regex, "Channel\\s+([0-9]+).+set to\\s+(.+)");
     state = ADACOM_STATE_INITIALISED;
@@ -80,6 +81,8 @@ void adacom_destroy(void)
     reset_adainfos();
     delete(regex_channel);
     delete(regex_set_resp);
+    delete(com_wdog);
+    free(device);
 }
 
 AdaComState adacom_state(void)
@@ -119,24 +122,13 @@ static void change_state(AdaComState new_state)
     state = new_state;
 }
 
-static void start_com_wdog(int ms)
-{
-    if (com_wdog != NULL) {
-        mloop_timer_in(com_wdog, ms);
-    } else {
-        com_wdog = mloop_timer_new(ms, com_wdog_cb, NULL);
-    }
-}
-
-static void stop_com_wdog(void)
-{
-    mloop_timer_cancle(com_wdog);
-}
-
 static bool is_cmd_running(void)
 {
     return com_wdog != NULL ? com_wdog->pending : false;
 }
+
+#define start_com_wdog(ms) mloop_timer_in(com_wdog, ms)
+#define stop_com_wdog() mloop_timer_cancle(com_wdog)
 
 static AdaComError send_cmd(const char *cmd)
 {

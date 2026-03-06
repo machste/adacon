@@ -24,7 +24,7 @@ static Map *cmdline_args = NULL;
 static Config cfg = {
     .log_level = LOG_INFO,
     .ada.device = "/dev/ttyUSB_ADAURA",
-    .ada.pivot_attenuation = 60,
+    .ada.pivot_attenuation = 40,
 };
 static int n_channels = 0;
 static int current_channel = -1;

@@ -1,13 +1,13 @@
+cmake_minimum_required(VERSION 3.12)
+
 project(adacon)
 
-SET(PROJECT_VERSION 0.1.0)
+SET(PROJECT_VERSION 0.1.1)
 SET(PROJECT_TITLE "Adaura Controller")
-
-cmake_minimum_required(VERSION 3.12)
 
 find_package(PkgConfig REQUIRED)
 
-pkg_check_modules(MODULES REQUIRED libmasc>=1.5.1 ncurses)
+pkg_check_modules(MODULES REQUIRED libmasc>=1.6.0 ncurses)
 
 include(GNUInstallDirs)
 
