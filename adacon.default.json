@@ -1,0 +1,8 @@
+{
+    "log_level": 6,
+    "device": "/dev/ttyUSB_ADAURA",
+    "pivot_attenuation": 20,
+    "sample_rate": 10,
+    "action_time": 1000,
+    "recovery_time": 5000
+}

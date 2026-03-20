@@ -5,27 +5,11 @@
 
 #include <masc.h>
 
+#include "cfg.h"
 #include "adacom.h"
 #include "tui.h"
 
 
-typedef struct {
-    const char *device;
-    int pivot_attenuation;
-} AdaConfig;
-
-typedef struct {
-    int log_level;
-    AdaConfig ada;
-} Config;
-
-
-static Map *cmdline_args = NULL;
-static Config cfg = {
-    .log_level = LOG_INFO,
-    .ada.device = "/dev/ttyUSB_ADAURA",
-    .ada.pivot_attenuation = 40,
-};
 static int n_channels = 0;
 static int current_channel = -1;
 static double atten_interval = 5.0;
@@ -41,7 +25,7 @@ static void connect_cb(AdaComError err)
             tui_set_attenuation(ch, adacom_get_channel(ch));
         }
         log_info("Connected to %s (%s) with %i channels.",
-                        adacom_model(), adacom_sn(), n_channels);
+                adacom_model(), adacom_sn(), n_channels);
     }
     tui_adacom_state(adacom_state());
 }
@@ -146,7 +130,7 @@ static void action_ch_solo_step(int key) {
     double min_atten;
     if (solo_ch > ADACOM_MIN_ATTENUATION) {
         // ... around the pivot point.
-        min_atten = 2 * cfg.ada.pivot_attenuation - solo_ch;
+        min_atten = 2 * cfg.pivot_attenuation - solo_ch;
     } else {
         // ... if the solo channel reaches the minimal attenuation, raise all
         // other channels to their maximum attenuation.
@@ -200,59 +184,18 @@ static void action_disconnect(int key) {
     tui_adacom_infos(NULL, NULL, 0);
 }
 
-void *log_level_check(Str *log_level_str, Str **err_msg)
-{
-    Int *log_level = argparse_int(log_level_str, err_msg);
-    if (log_level != NULL) {
-        if (!int_in_range(log_level, 0, 7)) {
-            *err_msg = str_new("invalid log level: %O!", log_level_str);
-            delete(log_level);
-            log_level = NULL;
-        }
+static void action_show_config(int key) {
+    if (cfg.file_path != NULL) {
+        log_info("file: %s", cfg.file_path);
     }
-    return log_level;
-}
-
-void *device_check(Str *path, Str **err_msg)
-{
-    if (!path_exists(str_cstr(path)))
-    {
-        *err_msg = str_new("device '%O' does not exist!", path);
-        return NULL;
-    }
-    return new_copy(path);
-}
-
-static Map *parse_arguments(int argc, char *argv[])
-{
-    Map *args;
-    const char *prog = path_basename(argv[0]);
-    // Setup argument parser
-    Argparse *ap = new(Argparse, prog, PROJECT_TITLE);
-    // * Log level
-    argparse_add_opt(ap, 'l', "log-level", "LEVEL", "1", log_level_check,
-                     "log level (0 - 7)");
-    // * Device name
-    argparse_add_opt(ap, 'd', "device", "DEV", "1", device_check,
-                     "path to serial device");
-    // Parse command line arguments
-    args = argparse_parse(ap, argc, argv);
-    delete(ap);
-    // Populate config structure
-    Int *log_level = map_get(args, "log-level");
-    if (!is_none(log_level)) {
-        cfg.log_level = int_get(log_level);
-    }
-    Str *device = map_get(args, "device");
-    if (!is_none(device)) {
-        cfg.ada.device = str_cstr(device);
-    }
-    return args;
+    log_info("pivot: %.2f, sample rate: %i, action: %i, recovery: %i",
+            cfg.pivot_attenuation, cfg.sample_rate,
+            cfg.action_time, cfg.recovery_time);
 }
 
 int main(int argc, char *argv[])
 {
-    cmdline_args = parse_arguments(argc, argv);
+    cfg_init(argc, argv);
     log_init(cfg.log_level);
     mloop_init();
     tui_init();
@@ -268,6 +211,7 @@ int main(int argc, char *argv[])
     tui_add_action(TUI_KEY_NPAGE, action_min_max_atten);
     tui_add_action(TUI_KEY_RIGHT, action_shift_ch_right);
     tui_add_action(TUI_KEY_LEFT, action_shift_ch_left);
+    tui_add_action('C', action_show_config);
     tui_add_num_action(action_select_ch);
     adacom_init(cfg.ada.device);
     if (adacom_connect(connect_cb) != ADACOM_OK) {
@@ -276,7 +220,7 @@ int main(int argc, char *argv[])
     mloop_run();
     adacom_destroy();
     tui_destroy();
-    delete(cmdline_args);
+    cfg_destroy();
     return 0;
 }
 
