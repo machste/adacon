@@ -10,6 +10,8 @@ Config cfg = {
     .log_level = LOG_INFO,
     .file_path = NULL,
     .ada.device = "/dev/ttyUSB_ADAURA",
+    .groups = NULL,
+    .channels = NULL,
     .pivot_attenuation = 47.5,
     .sample_rate = 10,
     .action_time = 1000,
@@ -137,6 +139,57 @@ static Json *check_default_config_files(void)
     return js;
 }
 
+static List *parse_channel_list(List *channels, Str **err_msg)
+{
+    List *chs = new(List);
+    *err_msg = NULL;
+    Iter itr = init(Iter, channels);
+    for (Int *ch = next(&itr); ch != NULL; ch = next(&itr)) {
+        if (!isinstance(ch, Int)) {
+            *err_msg = str_new("invalid type <%s> for channel! (%O)",
+                    name_of(ch), ch);
+        } else if (ch->val < 1) {
+            *err_msg = str_new("invalid channel number '%i'!", ch->val);
+        } else {
+            list_append(chs, new(Int, ch->val - 1));
+        }
+        // If an error occured, delete channel list and exit.
+        if (*err_msg != NULL) {
+            delete(chs);
+            chs = NULL;
+            break;
+        }
+    }
+    destroy(&itr);
+    return chs;
+}
+
+static bool parse_channel_groups(List *groups, Str **err_msg)
+{
+    *err_msg = NULL;
+    Iter itr = init(Iter, groups);
+    for (List *group = next(&itr); group != NULL; group = next(&itr)) {
+        if (isinstance(group, List)) {
+            List *chs = parse_channel_list(group, err_msg);
+            if (chs != NULL) {
+                if (len(chs) > 1) {
+                    list_append(cfg.groups, chs);
+                } else {
+                    log_warn("Ignore channels list with less than one channel for channel groups!");
+                }
+            } else {
+                break;
+            }
+        } else {
+            *err_msg = str_new("invalid type <%s> for groups! (%O)",
+                    name_of(group), group);
+            break;
+        }
+    }
+    destroy(&itr);
+    return *err_msg == NULL;
+}
+
 static void parse_config_file(Json *js)
 {
     Str *err_msg = NULL;
@@ -167,6 +220,29 @@ static void parse_config_file(Json *js)
     } else if (!is_none(device_obj)) {
         err_msg = str_new("invalid type <%s> for device! (%O)",
                 name_of(device_obj), device_obj);
+        goto out;
+    }
+    // Channel groups
+    Object *groups_obj = json_get_node(js, "groups");
+    if (isinstance(groups_obj, List)) {
+        if (!parse_channel_groups((List *)groups_obj, &err_msg)) {
+            goto out;
+        }
+    } else if (!is_none(groups_obj)) {
+        err_msg = str_new("invalid type <%s> for groups! (%O)",
+                name_of(groups_obj), groups_obj);
+        goto out;
+    }
+    // Test Channels
+    Object *channels_obj = json_get_node(js, "channels");
+    if (isinstance(channels_obj, List)) {
+        cfg.channels = parse_channel_list((List *)channels_obj, &err_msg);
+        if (cfg.channels == NULL) {
+            goto out;
+        }
+    } else if (!is_none(channels_obj)) {
+        err_msg = str_new("invalid type <%s> for channels! (%O)",
+                name_of(channels_obj), channels_obj);
         goto out;
     }
     // Pivot attenuation
@@ -238,6 +314,8 @@ out:
 
 void cfg_init(int argc, char *argv[])
 {
+    // Initialise default configuration
+    cfg.groups = new(List);
     // First parse command line arguments to get config file path
     cmdline_args = parse_cmdline_args(argc, argv);
     Json *cfg_js = map_get(cmdline_args, "cfg-file");
@@ -255,8 +333,20 @@ void cfg_init(int argc, char *argv[])
     merge_cmdline_args(cmdline_args);
 }
 
+bool cfg_is_in_channels(int channel)
+{
+    if (len(cfg.channels) == 0) {
+        // If the list is empty all channels are considered as control channels.
+        return true;
+    }
+    Int ch = init(Int, channel);
+    return list_is_in(cfg.channels, &ch);
+}
+
 void cfg_destroy(void)
 {
     free(cfg.file_path);
     delete(cmdline_args);
+    delete(cfg.channels);
+    delete(cfg.groups);
 }

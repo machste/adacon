@@ -12,23 +12,10 @@
 
 static int n_channels = 0;
 static int current_channel = -1;
+static int ctrl_chs[ADACOM_MAX_CHANNELS];
+static int n_ctrl_chs = 0;
 static double atten_interval = 5.0;
 
-
-static void connect_cb(AdaComError err)
-{
-    if (err == ADACOM_OK) {
-        current_channel = -1;
-        n_channels = adacom_num_channels();
-        tui_adacom_infos(adacom_model(), adacom_sn(), n_channels);
-        for (int ch = 0; ch < n_channels; ch++) {
-            tui_set_attenuation(ch, adacom_get_channel(ch));
-        }
-        log_info("Connected to %s (%s) with %i channels.",
-                adacom_model(), adacom_sn(), n_channels);
-    }
-    tui_adacom_state(adacom_state());
-}
 
 static void action_select_ch(int key) {
     int ch = key - '1';
@@ -67,6 +54,73 @@ static void atten_set_cb(AdaComError err, int ch, double value)
     tui_set_attenuation(ch, value);
 }
 
+static void atten_set_all_cb(AdaComError err, double *values, int n)
+{
+    if (err != ADACOM_OK) {
+        log_error("Unable to set all attenuations!");
+        tui_adacom_state(adacom_state());
+        return;
+    }
+    tui_set_attenuations(values, n);
+}
+
+
+static List *get_group_by_channel(int channel)
+{
+    List *group = NULL;
+    Iter itr = init(Iter, cfg.groups);
+    for (List *grp = next(&itr); grp != NULL; grp = next(&itr)) {
+        Iter jtr = init(Iter, grp);
+        for (Int *c = next(&jtr); c != NULL; c = next(&jtr)) {
+            if (c->val == channel) {
+                group = grp;
+                break;
+            }
+        }
+        destroy(&jtr);
+    }
+    destroy(&itr);
+    return group;
+}
+
+static void group_set_channels(List *group, double *values, double atten)
+{
+    Iter itr = init(Iter, group);
+    for (Int *c = next(&itr); c != NULL; c = next(&itr)) {
+        if (c->val < n_channels) {
+            values[c->val] = atten;
+        }
+    }
+    destroy(&itr);
+}
+
+static void set_all_in_same_group(int ch, double *values, double atten)
+{
+    List *group = get_group_by_channel(ch);
+    if (group == NULL) {
+        values[ch] = atten;
+        return;
+    }
+    group_set_channels(group, values, atten);
+}
+
+static void set_group(int ch, double atten)
+{
+    List *group = get_group_by_channel(ch);
+    if (group == NULL) {
+        // Channel is in no group, set in and leave.
+        adacom_set_channel(current_channel, atten, atten_set_cb);
+        return;
+    }
+    // Get all channel attenuation values
+    double values[n_channels];
+    adacom_get_all(values, n_channels);
+    // Change value of the channels in the same group
+    group_set_channels(group, values, atten);
+    // Set all channels
+    adacom_set_all(values, n_channels, atten_set_all_cb);
+}
+
 static void action_min_max_atten(int key)
 {
     if (current_channel < 0 || adacom_state() != ADACOM_STATE_CONNECTED)
@@ -76,7 +130,7 @@ static void action_min_max_atten(int key)
         atten = ADACOM_MAX_ATTENUATION;
     else
         atten = ADACOM_MIN_ATTENUATION;
-    adacom_set_channel(current_channel, atten, atten_set_cb);
+    set_group(current_channel, atten);
 }
 
 static double inc_dec_attenuation(double value, bool increase)
@@ -90,30 +144,21 @@ static void action_up_down_atten(int key) {
         return;
     double atten = adacom_get_channel(current_channel);
     atten = inc_dec_attenuation(atten, key == TUI_KEY_UP);
-    adacom_set_channel(current_channel, atten, atten_set_cb);
-}
-
-static void atten_set_all_cb(AdaComError err, double *values, int n)
-{
-    if (err != ADACOM_OK) {
-        log_error("Unable to set all attenuations!");
-        tui_adacom_state(adacom_state());
-        return;
-    }
-    tui_set_attenuations(values, n);
+    set_group(current_channel, atten);
 }
 
 static void action_ch_solo(int key) {
     if (current_channel < 0 || adacom_state() != ADACOM_STATE_CONNECTED)
         return;
     double values[n_channels];
-    for (int ch = 0; ch < n_channels; ch++) {
-        if (current_channel == ch) {
-            values[ch] = ADACOM_MIN_ATTENUATION;
-        } else {
-            values[ch] = ADACOM_MAX_ATTENUATION;
-        }
+    adacom_get_all(values, n_channels);
+    // Set all channels in channels except the solo chanel to max attenuation
+    for (int i = 0; i < n_ctrl_chs; i++) {
+        int ch = ctrl_chs[i];
+        set_all_in_same_group(ch, values, ADACOM_MAX_ATTENUATION);
     }
+    // Set all channels in the same group as current channel to min attenuation
+    set_all_in_same_group(current_channel, values, ADACOM_MIN_ATTENUATION);
     adacom_set_all(values, n_channels, atten_set_all_cb);
 }
 
@@ -123,7 +168,7 @@ static void action_ch_solo_step(int key) {
     double values[n_channels];
     // Get all channel attenuation values
     adacom_get_all(values, n_channels);
-    // Calculate new attenuation for solo channel 
+    // Calculate new attenuation for solo channel
     double solo_ch = values[current_channel];
     solo_ch = inc_dec_attenuation(solo_ch, false);
     // Calculate minimal value for other channels ...
@@ -137,15 +182,13 @@ static void action_ch_solo_step(int key) {
         min_atten = ADACOM_MAX_ATTENUATION;
     }
     // Set all calculated attenuation values
-    for (int ch = 0; ch < n_channels; ch++) {
-        if (current_channel == ch) {
-            values[ch] = solo_ch;
-        } else {
-            if (values[ch] < min_atten) {
-                values[ch] = min_atten;
-            }
+    for (int i = 0; i < n_ctrl_chs; i++) {
+        int ch = ctrl_chs[i];
+        if (values[ch] < min_atten) {
+            set_all_in_same_group(ch, values, min_atten);
         }
     }
+    set_all_in_same_group(current_channel, values, solo_ch);
     adacom_set_all(values, n_channels, atten_set_all_cb);
 }
 
@@ -165,6 +208,53 @@ static void action_all_min(int key) {
 
 static void action_all_max(int key) {
     set_all_channels_to(ADACOM_MAX_ATTENUATION);
+}
+
+static void init_control_channels(void) {
+    for (int ch = 0; ch < n_channels; ch++) {
+        if (cfg_is_in_channels(ch)) {
+            ctrl_chs[n_ctrl_chs++] = ch;
+        }
+    }
+}
+
+static void sync_grouped_channels(double *values)
+{
+    Iter itr = init(Iter, cfg.groups);
+    for (List *grp = next(&itr); grp != NULL; grp = next(&itr)) {
+        Int *ch = list_get_at(grp, 0);
+        if (ch->val >= n_channels)
+            continue;
+        group_set_channels(grp, values, values[ch->val]);
+    }
+    destroy(&itr);
+}
+
+static void connect_cb(AdaComError err)
+{
+    if (err == ADACOM_OK) {
+        current_channel = -1;
+        n_channels = adacom_num_channels();
+        init_control_channels();
+        tui_adacom_infos(adacom_model(), adacom_sn(), n_channels);
+        log_info("Connected to %s (%s) with %i channels.",
+                adacom_model(), adacom_sn(), n_channels);
+        tui_adacom_state(adacom_state());
+        // Synchronise groups if there are any defined
+        if (len(cfg.groups) > 0) {
+            double values[n_channels];
+            adacom_get_all(values, n_channels);
+            sync_grouped_channels(values);
+            adacom_set_all(values, n_channels, atten_set_all_cb);
+        } else {
+            // Update all channels values in the TUI
+            for (int ch = 0; ch < n_channels; ch++) {
+                tui_set_attenuation(ch, adacom_get_channel(ch));
+            }
+        }
+    } else {
+        tui_adacom_state(adacom_state());
+    }
 }
 
 static void action_connect(int key) {
@@ -188,6 +278,8 @@ static void action_show_config(int key) {
     if (cfg.file_path != NULL) {
         log_info("file: %s", cfg.file_path);
     }
+    log_info("groups: %O", cfg.groups);
+    log_info("channels: %O", cfg.channels);
     log_info("pivot: %.2f, sample rate: %i, action: %i, recovery: %i",
             cfg.pivot_attenuation, cfg.sample_rate,
             cfg.action_time, cfg.recovery_time);

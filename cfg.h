@@ -17,6 +17,8 @@ typedef struct {
     int log_level;
     char *file_path;
     AdauraConfig ada;
+    List *groups;
+    List *channels;
     double pivot_attenuation;
     int sample_rate;
     int action_time;
@@ -28,6 +30,7 @@ extern Config cfg;
 
 
 void cfg_init(int argc, char *argv[]);
+bool cfg_is_in_channels(int ch);
 void cfg_destroy(void);
 
 #endif /* _CFG_H_ */

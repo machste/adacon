@@ -1,6 +1,8 @@
 {
     "log_level": 6,
     "device": "/dev/ttyUSB_ADAURA",
+    "channels": [1, 2, 3],
+    "groups": [[1, 5], [2, 6], [3, 7], [4, 8]],
     "pivot_attenuation": 20,
     "sample_rate": 10,
     "action_time": 1000,
