@@ -10,20 +10,40 @@
 #include "tui.h"
 
 
+typedef enum {
+    ADACON_STATE_STOPPED,
+    ADACON_STATE_PLAY_SINGLE,
+    ADACON_STATE_PLAY_COUNTINOUS
+} AdaConState;
+
+typedef enum {
+    HANDOFF_STATE_ACTIVE,
+    HANDOFF_STATE_RECOVER
+} HandoffState;
+
+
+static AdaConState state = ADACON_STATE_STOPPED;
 static int n_channels = 0;
 static int current_channel = -1;
 static int ctrl_chs[ADACOM_MAX_CHANNELS];
 static int n_ctrl_chs = 0;
 static double atten_interval = 5.0;
+static MlTimer *play_timer = NULL;
+static HandoffState ho_state;
+static int ho_ctrl_ch_idx = -1;
+static int ho_interval;
+static int ho_start;
 
 
 static void action_select_ch(int key) {
+    if (state != ADACON_STATE_STOPPED)
+        return;
     int ch = key - '1';
     current_channel = tui_select_channel(ch);
 }
 
 static void action_shift_ch_left(int key) {
-    if (adacom_state() != ADACOM_STATE_CONNECTED)
+    if (state != ADACON_STATE_STOPPED)
         return;
     if (current_channel <= 0) {
         current_channel = n_channels - 1;
@@ -34,7 +54,7 @@ static void action_shift_ch_left(int key) {
 }
 
 static void action_shift_ch_right(int key) {
-    if (adacom_state() != ADACOM_STATE_CONNECTED)
+    if (state != ADACON_STATE_STOPPED)
         return;
     if (current_channel >= n_channels - 1) {
         current_channel = 0;
@@ -123,7 +143,8 @@ static void set_group(int ch, double atten)
 
 static void action_min_max_atten(int key)
 {
-    if (current_channel < 0 || adacom_state() != ADACOM_STATE_CONNECTED)
+    if (current_channel < 0 || state != ADACON_STATE_STOPPED ||
+            adacom_state() != ADACOM_STATE_CONNECTED)
         return;
     double atten;
     if (key == TUI_KEY_PPAGE)
@@ -140,7 +161,8 @@ static double inc_dec_attenuation(double value, bool increase)
 }
 
 static void action_up_down_atten(int key) {
-    if (current_channel < 0 || adacom_state() != ADACOM_STATE_CONNECTED)
+    if (current_channel < 0 || state != ADACON_STATE_STOPPED ||
+            adacom_state() != ADACOM_STATE_CONNECTED)
         return;
     double atten = adacom_get_channel(current_channel);
     atten = inc_dec_attenuation(atten, key == TUI_KEY_UP);
@@ -148,7 +170,8 @@ static void action_up_down_atten(int key) {
 }
 
 static void action_ch_solo(int key) {
-    if (current_channel < 0 || adacom_state() != ADACOM_STATE_CONNECTED)
+    if (current_channel < 0 || state != ADACON_STATE_STOPPED ||
+            adacom_state() != ADACOM_STATE_CONNECTED)
         return;
     double values[n_channels];
     adacom_get_all(values, n_channels);
@@ -162,20 +185,13 @@ static void action_ch_solo(int key) {
     adacom_set_all(values, n_channels, atten_set_all_cb);
 }
 
-static void action_ch_solo_step(int key) {
-    if (current_channel < 0 || adacom_state() != ADACOM_STATE_CONNECTED)
-        return;
-    double values[n_channels];
-    // Get all channel attenuation values
-    adacom_get_all(values, n_channels);
-    // Calculate new attenuation for solo channel
-    double solo_ch = values[current_channel];
-    solo_ch = inc_dec_attenuation(solo_ch, false);
+static void set_solo_and_others(int solo_ch, double solo_val, double *values)
+{
     // Calculate minimal value for other channels ...
     double min_atten;
-    if (solo_ch > ADACOM_MIN_ATTENUATION) {
+    if (solo_val > ADACOM_MIN_ATTENUATION) {
         // ... around the pivot point.
-        min_atten = 2 * cfg.pivot_attenuation - solo_ch;
+        min_atten = 2 * cfg.pivot_attenuation - solo_val;
     } else {
         // ... if the solo channel reaches the minimal attenuation, raise all
         // other channels to their maximum attenuation.
@@ -188,12 +204,102 @@ static void action_ch_solo_step(int key) {
             set_all_in_same_group(ch, values, min_atten);
         }
     }
-    set_all_in_same_group(current_channel, values, solo_ch);
+    set_all_in_same_group(solo_ch, values, solo_val);
+}
+
+static void action_ch_solo_step(int key) {
+    if (current_channel < 0 || state != ADACON_STATE_STOPPED ||
+            adacom_state() != ADACOM_STATE_CONNECTED)
+        return;
+    double values[n_channels];
+    // Get all channel attenuation values
+    adacom_get_all(values, n_channels);
+    // Calculate new attenuation for solo channel
+    double solo_val = values[current_channel];
+    solo_val = inc_dec_attenuation(solo_val, false);
+    set_solo_and_others(current_channel, solo_val, values);
     adacom_set_all(values, n_channels, atten_set_all_cb);
 }
 
-static void set_all_channels_to(double value) {
+static int get_ctrl_ch_idx(int channel)
+{
+    for (int i = 0; i < n_ctrl_chs; i++) {
+        if (channel == ctrl_chs[i])
+            return i;
+    }
+    return -1;
+}
+
+static int next_ho_channel(void)
+{
+    if (++ho_ctrl_ch_idx >= n_ctrl_chs) {
+        ho_ctrl_ch_idx = 0;
+    }
+    return ctrl_chs[ho_ctrl_ch_idx];
+}
+
+static void player_cb(MlTimer *timer, void *arg)
+{
+    double values[n_channels];
+    int ho_time = mloop_run_time() - ho_start;
+    adacom_get_all(values, n_channels);
+    // Calculate new attenuation for solo channel
+    int solo_ch = ctrl_chs[ho_ctrl_ch_idx];
+    double ho_progress = (double)ho_time / cfg.action_time;
+    double solo_val = ADACOM_MAX_ATTENUATION \
+            - (ADACOM_MAX_ATTENUATION - ADACOM_MIN_ATTENUATION) * ho_progress;
+    log_debug("player: time: %i ms, ch: %i, atten: %.2f",
+            ho_time, solo_ch, solo_val);
+    if (solo_val < values[solo_ch]) {
+        set_solo_and_others(solo_ch, solo_val, values);
+        adacom_set_all(values, n_channels, atten_set_all_cb);
+    }
+    // Decide the next step in the handoff sequence.
+    if (ho_time < cfg.action_time) {
+        ml_timer_add(play_timer, ho_interval);
+    } else {
+        current_channel = tui_select_channel(next_ho_channel());
+        state = ADACON_STATE_STOPPED;
+    }
+}
+
+static bool trigger_handoff_to(int ch)
+{
+    int idx = get_ctrl_ch_idx(ch);
+    if (idx < 0) {
+        return false;
+    }
+    ho_ctrl_ch_idx = idx;
+    ho_state = HANDOFF_STATE_ACTIVE;
+    ho_interval = 1000 / cfg.sample_rate;
+    ho_start = mloop_run_time();
+    ml_timer_in(play_timer, ho_interval);
+    return true;
+}
+
+static void action_single_handoff(int key)
+{
     if (adacom_state() != ADACOM_STATE_CONNECTED)
+        return;
+    if (state == ADACON_STATE_STOPPED) {
+        if (current_channel < 0) {
+            current_channel = tui_select_channel(next_ho_channel());
+        }
+        if (trigger_handoff_to(current_channel)) {
+            state = ADACON_STATE_PLAY_SINGLE;
+        } else {
+            log_error("Not able to start handoff sequence for channel %i!",
+                    current_channel + 1);
+        }
+    } else if (state == ADACON_STATE_PLAY_COUNTINOUS) {
+        ml_timer_cancle(play_timer);
+        state = ADACON_STATE_STOPPED;
+    }
+}
+
+static void set_all_channels_to(double value) {
+    if (state != ADACON_STATE_STOPPED ||
+            adacom_state() != ADACOM_STATE_CONNECTED)
         return;
     double values[n_channels];
     for (int ch = 0; ch < n_channels; ch++) {
@@ -234,12 +340,16 @@ static void connect_cb(AdaComError err)
 {
     if (err == ADACOM_OK) {
         current_channel = -1;
+        ho_ctrl_ch_idx = -1;
         n_channels = adacom_num_channels();
         init_control_channels();
         tui_adacom_infos(adacom_model(), adacom_sn(), n_channels);
         log_info("Connected to %s (%s) with %i channels.",
                 adacom_model(), adacom_sn(), n_channels);
         tui_adacom_state(adacom_state());
+        for (int ch = 0; ch < n_channels; ch++) {
+            tui_set_attenuation(ch, adacom_get_channel(ch));
+        }
         // Synchronise groups if there are any defined
         if (len(cfg.groups) > 0) {
             double values[n_channels];
@@ -247,10 +357,6 @@ static void connect_cb(AdaComError err)
             sync_grouped_channels(values);
             adacom_set_all(values, n_channels, atten_set_all_cb);
         } else {
-            // Update all channels values in the TUI
-            for (int ch = 0; ch < n_channels; ch++) {
-                tui_set_attenuation(ch, adacom_get_channel(ch));
-            }
         }
     } else {
         tui_adacom_state(adacom_state());
@@ -297,6 +403,7 @@ int main(int argc, char *argv[])
     tui_add_action('n', action_all_min);
     tui_add_action('s', action_ch_solo_step);
     tui_add_action('S', action_ch_solo);
+    tui_add_action('h', action_single_handoff);
     tui_add_action(TUI_KEY_UP, action_up_down_atten);
     tui_add_action(TUI_KEY_DOWN, action_up_down_atten);
     tui_add_action(TUI_KEY_PPAGE, action_min_max_atten);
@@ -309,7 +416,9 @@ int main(int argc, char *argv[])
     if (adacom_connect(connect_cb) != ADACOM_OK) {
         tui_adacom_state(adacom_state());
     }
+    play_timer = new(MlTimer, player_cb, NULL);
     mloop_run();
+    delete(play_timer);
     adacom_destroy();
     tui_destroy();
     cfg_destroy();
