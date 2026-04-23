@@ -12,6 +12,8 @@ Config cfg = {
     .ada.device = "/dev/ttyUSB_ADAURA",
     .groups = NULL,
     .channels = NULL,
+    .min_attenuation = ADACOM_MIN_ATTENUATION,
+    .max_attenuation = ADACOM_MAX_ATTENUATION,
     .pivot_attenuation = 47.5,
     .sample_rate = 10,
     .action_time = 1000,
@@ -244,6 +246,36 @@ static void parse_config_file(Json *js)
         err_msg = str_new("invalid type <%s> for channels! (%O)",
                 name_of(channels_obj), channels_obj);
         goto out;
+    }
+    // Minimum attenuation
+    Object *min_atten_obj = json_get_node(js, "min_attenuation");
+    if (!is_none(min_atten_obj)) {
+        if (!isinstance(min_atten_obj, Num)) {
+            err_msg = str_new("Expecting type Num for 'min_attenuation'!");
+            goto out;
+        }
+        double atten = to_double((Num *)min_atten_obj);
+        // Check the min attenuation value
+        if (atten < ADACOM_MIN_ATTENUATION || atten > ADACOM_MAX_ATTENUATION) {
+            err_msg = str_new("Value of 'min_attenuation' is out of range!");
+            goto out;
+        }
+        cfg.min_attenuation = atten;
+    }
+    // Pivot attenuation
+    Object *max_atten_obj = json_get_node(js, "max_attenuation");
+    if (!is_none(max_atten_obj)) {
+        if (!isinstance(max_atten_obj, Num)) {
+            err_msg = str_new("Expecting type Num for 'max_attenuation'!");
+            goto out;
+        }
+        double atten = to_double((Num *)max_atten_obj);
+        // Check the max attenuation value
+        if (atten < ADACOM_MIN_ATTENUATION || atten > ADACOM_MAX_ATTENUATION) {
+            err_msg = str_new("Value of 'max_attenuation' is out of range!");
+            goto out;
+        }
+        cfg.max_attenuation = atten;
     }
     // Pivot attenuation
     Object *pivot_atten_obj = json_get_node(js, "pivot_attenuation");

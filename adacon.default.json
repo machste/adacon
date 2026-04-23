@@ -3,6 +3,8 @@
     "device": "/dev/ttyUSB_ADAURA",
     "channels": [1, 2, 3],
     "groups": [[1, 5], [2, 6], [3, 7], [4, 8]],
+    "min_attenuation": 0,
+    "max_attenuation": 95,
     "pivot_attenuation": 20,
     "sample_rate": 10,
     "action_time": 1000,

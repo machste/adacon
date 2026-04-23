@@ -19,6 +19,8 @@ typedef struct {
     AdauraConfig ada;
     List *groups;
     List *channels;
+    double min_attenuation;
+    double max_attenuation;
     double pivot_attenuation;
     int sample_rate;
     int action_time;

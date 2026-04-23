@@ -148,9 +148,9 @@ static void action_min_max_atten(int key)
         return;
     double atten;
     if (key == TUI_KEY_PPAGE)
-        atten = ADACOM_MAX_ATTENUATION;
+        atten = cfg.max_attenuation;
     else
-        atten = ADACOM_MIN_ATTENUATION;
+        atten = cfg.min_attenuation;
     set_group(current_channel, atten);
 }
 
@@ -178,10 +178,10 @@ static void action_ch_solo(int key) {
     // Set all channels in channels except the solo chanel to max attenuation
     for (int i = 0; i < n_ctrl_chs; i++) {
         int ch = ctrl_chs[i];
-        set_all_in_same_group(ch, values, ADACOM_MAX_ATTENUATION);
+        set_all_in_same_group(ch, values, cfg.max_attenuation);
     }
     // Set all channels in the same group as current channel to min attenuation
-    set_all_in_same_group(current_channel, values, ADACOM_MIN_ATTENUATION);
+    set_all_in_same_group(current_channel, values, cfg.min_attenuation);
     adacom_set_all(values, n_channels, atten_set_all_cb);
 }
 
@@ -189,13 +189,13 @@ static void set_solo_and_others(int solo_ch, double solo_val, double *values)
 {
     // Calculate minimal value for other channels ...
     double min_atten;
-    if (solo_val > ADACOM_MIN_ATTENUATION) {
+    if (solo_val > cfg.min_attenuation) {
         // ... around the pivot point.
         min_atten = 2 * cfg.pivot_attenuation - solo_val;
     } else {
         // ... if the solo channel reaches the minimal attenuation, raise all
         // other channels to their maximum attenuation.
-        min_atten = ADACOM_MAX_ATTENUATION;
+        min_atten = cfg.max_attenuation;
     }
     // Set all calculated attenuation values
     for (int i = 0; i < n_ctrl_chs; i++) {
@@ -246,8 +246,8 @@ static void player_cb(MlTimer *timer, void *arg)
     // Calculate new attenuation for solo channel
     int solo_ch = ctrl_chs[ho_ctrl_ch_idx];
     double ho_progress = (double)ho_time / cfg.action_time;
-    double solo_val = ADACOM_MAX_ATTENUATION \
-            - (ADACOM_MAX_ATTENUATION - ADACOM_MIN_ATTENUATION) * ho_progress;
+    double solo_val = cfg.max_attenuation \
+            - (cfg.max_attenuation - cfg.min_attenuation) * ho_progress;
     log_debug("player: time: %i ms, ch: %i, atten: %.2f",
             ho_time, solo_ch, solo_val);
     if (solo_val < values[solo_ch]) {
@@ -309,11 +309,11 @@ static void set_all_channels_to(double value) {
 }
 
 static void action_all_min(int key) {
-    set_all_channels_to(ADACOM_MIN_ATTENUATION);
+    set_all_channels_to(cfg.min_attenuation);
 }
 
 static void action_all_max(int key) {
-    set_all_channels_to(ADACOM_MAX_ATTENUATION);
+    set_all_channels_to(cfg.max_attenuation);
 }
 
 static void init_control_channels(void) {
@@ -386,9 +386,10 @@ static void action_show_config(int key) {
     }
     log_info("groups: %O", cfg.groups);
     log_info("channels: %O", cfg.channels);
-    log_info("pivot: %.2f, sample rate: %i, action: %i, recovery: %i",
-            cfg.pivot_attenuation, cfg.sample_rate,
-            cfg.action_time, cfg.recovery_time);
+    log_info("min: %.2f, max: %.2f, pivot: %.2f",
+            cfg.min_attenuation, cfg.max_attenuation, cfg.pivot_attenuation);
+    log_info("sample rate: %i, action: %i, recovery: %i",
+            cfg.sample_rate, cfg.action_time, cfg.recovery_time);
 }
 
 int main(int argc, char *argv[])
